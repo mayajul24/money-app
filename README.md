@@ -1,32 +1,23 @@
-# React + TypeScript + Vite
+# הכסף שלי
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+אפליקציית PWA אישית לניהול הוצאות והכנסות. React + Vite + TypeScript, אחסון מקומי בלבד (IndexedDB דרך Dexie) — אין שרת, אין ענן, הנתונים נשארים על המכשיר.
 
-Currently, two official plugins are available:
+## הרצה מקומית
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+1. `npm install`
+2. `npm run dev`
 
-## React Compiler
+## מבנה הפרויקט
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- `src/lib/db.ts` - סכימת Dexie (IndexedDB): תנועות ותקציבים
+- `src/lib/categories.ts` - רשימת הקטגוריות, צבעים ואייקונים
+- `src/hooks/` - hooks ל-live query על תנועות ותקציבים
+- `src/components/` - מסכי הוספה, סיכום חודשי ותקציב
 
-## Expanding the Oxlint configuration
+## פריסה
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+מחובר ל-Vercel — כל push ל-`main` מפרסם אוטומטית.
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
+## התקנה על הטלפון
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+פתחו את כתובת האתר בדפדפן הטלפון ובחרו "הוסף למסך הבית" (Add to Home Screen) כדי שתתנהג כמו אפליקציה רגילה, כולל עבודה אופליין.
