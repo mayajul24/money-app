@@ -1,4 +1,4 @@
-import { db, type Transaction, type RecurringExpense } from './db'
+import { db, PROFILE_ID, type Transaction, type RecurringExpense } from './db'
 import type { CategoryId } from './categories'
 import { currentMonthKey, shiftMonthKey } from './month'
 
@@ -125,5 +125,18 @@ export async function ensureSeedData(): Promise<void> {
     monthlySalary: MONTHLY_SALARY,
     currentBalance: startingBalance + currentMonthNet,
     balanceAsOf: todayIso,
+  })
+}
+
+/**
+ * Wipes the demo data and leaves a blank (not absent) profile, so
+ * ensureSeedData() won't re-seed on the next load.
+ */
+export async function clearDemoDataForRealUse(): Promise<void> {
+  const todayIso = new Date().toISOString().slice(0, 10)
+  await db.transaction('rw', db.transactions, db.recurringExpenses, db.profile, async () => {
+    await db.transactions.clear()
+    await db.recurringExpenses.clear()
+    await db.profile.put({ id: PROFILE_ID, monthlySalary: 0, currentBalance: 0, balanceAsOf: todayIso })
   })
 }

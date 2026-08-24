@@ -8,6 +8,7 @@ import {
 } from '../hooks/useRecurringExpenses'
 import { EXPENSE_CATEGORIES, getCategory, type CategoryId } from '../lib/categories'
 import type { RecurringExpense } from '../lib/db'
+import { clearDemoDataForRealUse } from '../lib/mockData'
 
 function RecurringExpenseForm({
   existing,
@@ -83,6 +84,12 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
   const [recurringFormState, setRecurringFormState] = useState<{ open: boolean; editing?: RecurringExpense }>({
     open: false,
   })
+  const [confirmingReset, setConfirmingReset] = useState(false)
+
+  async function handleReset() {
+    await clearDemoDataForRealUse()
+    setConfirmingReset(false)
+  }
 
   // useProfile() resolves asynchronously (Dexie live query), so the loaded
   // values arrive after the initial render — sync them in once they land.
@@ -168,6 +175,27 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             <button className="add-transaction-btn" onClick={() => setRecurringFormState({ open: true })}>
               + הוסף הוצאה קבועה
             </button>
+          )}
+        </section>
+
+        <section className="settings-section">
+          <h3>איפוס</h3>
+          {!confirmingReset ? (
+            <button className="secondary-btn danger" onClick={() => setConfirmingReset(true)}>
+              מחק את נתוני הדמה והתחל עם הנתונים שלי
+            </button>
+          ) : (
+            <div className="reset-confirm">
+              <p>זה ימחק את כל התנועות וההוצאות הקבועות לצמיתות. אי אפשר לבטל.</p>
+              <div className="modal-actions">
+                <button type="button" className="secondary-btn" onClick={() => setConfirmingReset(false)}>
+                  ביטול
+                </button>
+                <button type="button" className="secondary-btn danger" onClick={handleReset}>
+                  כן, מחק הכל
+                </button>
+              </div>
+            </div>
           )}
         </section>
       </div>
