@@ -7,6 +7,7 @@ import {
   type ColumnMapping,
 } from '../lib/importFile'
 import { importTransactions } from '../hooks/useTransactions'
+import { getCategory } from '../lib/categories'
 
 type Step =
   | { kind: 'select' }
@@ -40,7 +41,7 @@ export function ImportTransactionsModal({ onClose }: { onClose: () => void }) {
     const candidates = imported.map((row) => ({
       type: row.type,
       amount: row.amount,
-      category: row.type === 'income' ? ('income' as const) : ('other' as const),
+      category: row.category,
       note: row.note,
       date: row.date,
     }))
@@ -192,6 +193,22 @@ function ColumnMappingStep({
         </select>
       </label>
 
+      <label className="settings-label">
+        עמודת קטגוריה (אופציונלי — ננסה להתאים לקטגוריות של האפליקציה)
+        <select
+          className="note-input"
+          value={mapping.category ?? ''}
+          onChange={(e) => onMappingChange({ ...mapping, category: e.target.value === '' ? null : Number(e.target.value) })}
+        >
+          <option value="">ללא</option>
+          {headers.map((h, i) => (
+            <option key={i} value={i}>
+              {h || `עמודה ${i + 1}`}
+            </option>
+          ))}
+        </select>
+      </label>
+
       <div className="type-toggle">
         <button
           type="button"
@@ -282,7 +299,7 @@ function ColumnMappingStep({
               <span className={row.type === 'expense' ? 'trend-up' : 'trend-down'}>
                 {row.type === 'expense' ? '-' : '+'}₪{row.amount.toLocaleString()}
               </span>{' '}
-              · {row.date} · {row.note}
+              · {getCategory(row.category).label} · {row.date} · {row.note}
             </p>
           ))}
         </div>

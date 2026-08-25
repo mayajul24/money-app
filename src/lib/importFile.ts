@@ -1,5 +1,6 @@
 import Papa from 'papaparse'
 import { readSheet } from 'read-excel-file/browser'
+import type { CategoryId } from './categories'
 
 /**
  * Israeli bank/credit-card CSV exports are frequently Windows-1255
@@ -42,6 +43,7 @@ export type SingleColumnMode = 'signed' | 'allExpense' | 'allIncome'
 export interface ColumnMapping {
   date: number
   description: number | null
+  category: number | null
   amountMode: 'single' | 'debitCredit'
   amount: number | null
   singleColumnMode: SingleColumnMode
@@ -54,7 +56,15 @@ const AMOUNT_KEYWORDS = ['סכום', 'amount', 'total']
 const DEBIT_KEYWORDS = ['חובה', 'חיוב', 'debit']
 const CREDIT_KEYWORDS = ['זכות', 'זיכוי', 'credit']
 const DESCRIPTION_KEYWORDS = ['תיאור', 'פירוט', 'עסק', 'description', 'details', 'memo']
-const ALL_KEYWORDS = [...DATE_KEYWORDS, ...AMOUNT_KEYWORDS, ...DEBIT_KEYWORDS, ...CREDIT_KEYWORDS, ...DESCRIPTION_KEYWORDS]
+const CATEGORY_KEYWORDS = ['קטגוריה', 'category']
+const ALL_KEYWORDS = [
+  ...DATE_KEYWORDS,
+  ...AMOUNT_KEYWORDS,
+  ...DEBIT_KEYWORDS,
+  ...CREDIT_KEYWORDS,
+  ...DESCRIPTION_KEYWORDS,
+  ...CATEGORY_KEYWORDS,
+]
 
 /**
  * Real exports often have a title/metadata row or two above the actual
@@ -122,10 +132,13 @@ export function guessColumnMapping(headers: string[], dataRows: string[][] = [])
   if (amount !== null) used.add(amount)
 
   const description = findColumn(headers, DESCRIPTION_KEYWORDS, used)
+  if (description !== null) used.add(description)
+  const category = findColumn(headers, CATEGORY_KEYWORDS, used)
 
   return {
     date,
     description,
+    category,
     amountMode: hasDebitCredit ? 'debitCredit' : 'single',
     amount,
     singleColumnMode: amount !== null ? guessSingleColumnMode(dataRows, amount) : 'signed',
@@ -137,17 +150,22 @@ export function guessColumnMapping(headers: string[], dataRows: string[][] = [])
 /**
  * Credit-card statements list every charge as a plain positive number —
  * there's no sign to read "expense" from, unlike a bank account's signed
- * running balance. If none of the sampled values are negative, a single
- * amount column is far more likely to be "every row is a charge" than
- * "every row happens to be positive income", so default to all-expense.
+ * running balance. But an occasional refund or cancelled transaction can
+ * still show up as negative on an otherwise all-positive statement, so a
+ * single stray negative value shouldn't flip the whole file over to
+ * "signed" (which would then misread every real charge as income). Only
+ * treat it as a genuinely signed ledger when negatives are a substantial
+ * share of the values, not just a rare exception.
  */
 function guessSingleColumnMode(dataRows: string[][], amountColumnIndex: number): SingleColumnMode {
-  const sample = dataRows.slice(0, 30)
-  const hasNegative = sample.some((row) => {
-    const value = parseAmountFlexible(row[amountColumnIndex] ?? '')
-    return value !== null && value < 0
-  })
-  return hasNegative ? 'signed' : 'allExpense'
+  const sample = dataRows.slice(0, 50)
+  const values = sample
+    .map((row) => parseAmountFlexible(row[amountColumnIndex] ?? ''))
+    .filter((v): v is number => v !== null && v !== 0)
+  if (values.length === 0) return 'allExpense'
+
+  const negativeRatio = values.filter((v) => v < 0).length / values.length
+  return negativeRatio >= 0.25 ? 'signed' : 'allExpense'
 }
 
 const HEBREW_MONTH_NAMES: Record<string, number> = {
@@ -217,10 +235,28 @@ export function parseAmountFlexible(raw: string): number | null {
   return negative ? -value : value
 }
 
+const CATEGORY_LABEL_MAP: { category: CategoryId; keywords: string[] }[] = [
+  { category: 'food', keywords: ['מסעדות', 'קפה', 'מזון', 'צריכה', 'סופר', 'food', 'restaurant', 'grocery'] },
+  { category: 'transport', keywords: ['תחבורה', 'רכב', 'דלק', 'חניה', 'transport', 'fuel', 'parking'] },
+  { category: 'housing', keywords: ['דיור', 'שכירות', 'housing', 'rent'] },
+  { category: 'fun', keywords: ['פנאי', 'בידור', 'ספורט', 'טיסות', 'תיירות', 'fun', 'entertainment', 'travel'] },
+  { category: 'health', keywords: ['רפואה', 'מרקחת', 'בריאות', 'health', 'pharmacy', 'medical'] },
+  { category: 'shopping', keywords: ['אופנה', 'ספרים', 'קניות', 'shopping', 'fashion', 'books'] },
+  { category: 'bills', keywords: ['חשבונות', 'ביטוח', 'סלולר', 'אינטרנט', 'bills', 'insurance', 'utilities'] },
+]
+
+export function mapCategoryLabel(raw: string): CategoryId {
+  const lower = raw.trim().toLowerCase()
+  if (lower === '') return 'other'
+  const match = CATEGORY_LABEL_MAP.find(({ keywords }) => keywords.some((k) => lower.includes(k.toLowerCase())))
+  return match?.category ?? 'other'
+}
+
 export interface ImportedRow {
   date: string
   amount: number
   type: 'income' | 'expense'
+  category: CategoryId
   note: string
 }
 
@@ -271,7 +307,10 @@ export function extractRows(rows: string[][], mapping: ColumnMapping): ImportRes
       continue
     }
 
-    imported.push({ date, amount, type, note })
+    const category: CategoryId =
+      type === 'income' ? 'income' : mapping.category !== null ? mapCategoryLabel(row[mapping.category] ?? '') : 'other'
+
+    imported.push({ date, amount, type, category, note })
   }
 
   return { imported, invalidDateCount, invalidAmountCount }
