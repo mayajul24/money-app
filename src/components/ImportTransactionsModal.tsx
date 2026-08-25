@@ -1,17 +1,17 @@
 import { useState } from 'react'
 import {
-  parseSpreadsheetFile,
+  parseSpreadsheetRows,
+  guessHeaderRowIndex,
   guessColumnMapping,
   extractRows,
   type ColumnMapping,
-  type ParsedCsv,
 } from '../lib/importFile'
 import { importTransactions } from '../hooks/useTransactions'
 
 type Step =
   | { kind: 'select' }
-  | { kind: 'map'; csv: ParsedCsv; mapping: ColumnMapping }
-  | { kind: 'result'; added: number; skipped: number; invalid: number }
+  | { kind: 'map'; allRows: string[][]; headerRowIndex: number; mapping: ColumnMapping }
+  | { kind: 'result'; added: number; skipped: number; invalidDate: number; invalidAmount: number }
 
 export function ImportTransactionsModal({ onClose }: { onClose: () => void }) {
   const [step, setStep] = useState<Step>({ kind: 'select' })
@@ -20,12 +20,14 @@ export function ImportTransactionsModal({ onClose }: { onClose: () => void }) {
   async function handleFile(file: File) {
     setError('')
     try {
-      const csv = await parseSpreadsheetFile(file)
-      if (csv.headers.length === 0) {
+      const allRows = await parseSpreadsheetRows(file)
+      if (allRows.length === 0) {
         setError('לא הצלחתי לקרוא את הקובץ. ודאי שזה קובץ CSV או Excel')
         return
       }
-      setStep({ kind: 'map', csv, mapping: guessColumnMapping(csv.headers) })
+      const headerRowIndex = guessHeaderRowIndex(allRows)
+      const mapping = guessColumnMapping(allRows[headerRowIndex], allRows.slice(headerRowIndex + 1))
+      setStep({ kind: 'map', allRows, headerRowIndex, mapping })
     } catch {
       setError('לא הצלחתי לקרוא את הקובץ. ודאי שזה קובץ CSV או Excel')
     }
@@ -33,7 +35,8 @@ export function ImportTransactionsModal({ onClose }: { onClose: () => void }) {
 
   async function handleImport() {
     if (step.kind !== 'map') return
-    const { imported, invalidCount } = extractRows(step.csv.rows, step.mapping)
+    const dataRows = step.allRows.slice(step.headerRowIndex + 1)
+    const { imported, invalidDateCount, invalidAmountCount } = extractRows(dataRows, step.mapping)
     const candidates = imported.map((row) => ({
       type: row.type,
       amount: row.amount,
@@ -42,7 +45,7 @@ export function ImportTransactionsModal({ onClose }: { onClose: () => void }) {
       date: row.date,
     }))
     const { added, skipped } = await importTransactions(candidates)
-    setStep({ kind: 'result', added, skipped, invalid: invalidCount })
+    setStep({ kind: 'result', added, skipped, invalidDate: invalidDateCount, invalidAmount: invalidAmountCount })
   }
 
   return (
@@ -71,9 +74,18 @@ export function ImportTransactionsModal({ onClose }: { onClose: () => void }) {
 
         {step.kind === 'map' && (
           <ColumnMappingStep
-            csv={step.csv}
+            allRows={step.allRows}
+            headerRowIndex={step.headerRowIndex}
             mapping={step.mapping}
-            onChange={(mapping) => setStep({ kind: 'map', csv: step.csv, mapping })}
+            onHeaderRowChange={(headerRowIndex) =>
+              setStep({
+                kind: 'map',
+                allRows: step.allRows,
+                headerRowIndex,
+                mapping: guessColumnMapping(step.allRows[headerRowIndex] ?? [], step.allRows.slice(headerRowIndex + 1)),
+              })
+            }
+            onMappingChange={(mapping) => setStep({ kind: 'map', allRows: step.allRows, headerRowIndex: step.headerRowIndex, mapping })}
             onCancel={onClose}
             onImport={handleImport}
           />
@@ -84,7 +96,17 @@ export function ImportTransactionsModal({ onClose }: { onClose: () => void }) {
             <h2 className="import-title">הייבוא הושלם</h2>
             <p>יובאו {step.added} תנועות חדשות.</p>
             {step.skipped > 0 && <p className="settings-hint">{step.skipped} כפילויות דולגו.</p>}
-            {step.invalid > 0 && <p className="settings-hint">{step.invalid} שורות לא זוהו ולא יובאו.</p>}
+            {step.invalidDate > 0 && (
+              <p className="settings-hint">{step.invalidDate} שורות דולגו — לא זוהה בהן תאריך תקין בעמודה שבחרת.</p>
+            )}
+            {step.invalidAmount > 0 && (
+              <p className="settings-hint">{step.invalidAmount} שורות דולגו — לא זוהה בהן סכום תקין בעמודה שבחרת.</p>
+            )}
+            {step.added === 0 && (step.invalidDate > 0 || step.invalidAmount > 0) && (
+              <p className="import-error">
+                אם הכול דולג, כנראה שעמודות התאריך/הסכום או שורת הכותרות לא נבחרו נכון — אפשר לנסות שוב ולתקן אותן ידנית.
+              </p>
+            )}
             <div className="modal-actions">
               <button type="button" className="submit-btn" onClick={onClose}>
                 סגור
@@ -98,19 +120,26 @@ export function ImportTransactionsModal({ onClose }: { onClose: () => void }) {
 }
 
 function ColumnMappingStep({
-  csv,
+  allRows,
+  headerRowIndex,
   mapping,
-  onChange,
+  onHeaderRowChange,
+  onMappingChange,
   onCancel,
   onImport,
 }: {
-  csv: ParsedCsv
+  allRows: string[][]
+  headerRowIndex: number
   mapping: ColumnMapping
-  onChange: (mapping: ColumnMapping) => void
+  onHeaderRowChange: (index: number) => void
+  onMappingChange: (mapping: ColumnMapping) => void
   onCancel: () => void
   onImport: () => void
 }) {
-  const preview = csv.rows.slice(0, 4)
+  const headers = allRows[headerRowIndex] ?? []
+  const previewRowCount = Math.min(allRows.length, 10)
+  const dataPreview = allRows.slice(headerRowIndex + 1, headerRowIndex + 4)
+
   const canImport =
     mapping.date !== null &&
     (mapping.amountMode === 'single' ? mapping.amount !== null : mapping.debit !== null && mapping.credit !== null)
@@ -118,6 +147,18 @@ function ColumnMappingStep({
   return (
     <div className="import-step">
       <h2 className="import-title">התאמת עמודות</h2>
+
+      <label className="settings-label">
+        איזו שורה היא שורת הכותרות?
+        <select className="note-input" value={headerRowIndex} onChange={(e) => onHeaderRowChange(Number(e.target.value))}>
+          {Array.from({ length: previewRowCount }).map((_, i) => (
+            <option key={i} value={i}>
+              שורה {i + 1}: {allRows[i].slice(0, 4).join(' | ') || '(ריקה)'}
+            </option>
+          ))}
+        </select>
+      </label>
+
       <p className="settings-hint">נחשנו מה כל עמודה — אפשר לתקן לפני הייבוא</p>
 
       <label className="settings-label">
@@ -125,9 +166,9 @@ function ColumnMappingStep({
         <select
           className="note-input"
           value={mapping.date}
-          onChange={(e) => onChange({ ...mapping, date: Number(e.target.value) })}
+          onChange={(e) => onMappingChange({ ...mapping, date: Number(e.target.value) })}
         >
-          {csv.headers.map((h, i) => (
+          {headers.map((h, i) => (
             <option key={i} value={i}>
               {h || `עמודה ${i + 1}`}
             </option>
@@ -140,10 +181,10 @@ function ColumnMappingStep({
         <select
           className="note-input"
           value={mapping.description ?? ''}
-          onChange={(e) => onChange({ ...mapping, description: e.target.value === '' ? null : Number(e.target.value) })}
+          onChange={(e) => onMappingChange({ ...mapping, description: e.target.value === '' ? null : Number(e.target.value) })}
         >
           <option value="">ללא</option>
-          {csv.headers.map((h, i) => (
+          {headers.map((h, i) => (
             <option key={i} value={i}>
               {h || `עמודה ${i + 1}`}
             </option>
@@ -155,35 +196,49 @@ function ColumnMappingStep({
         <button
           type="button"
           className={mapping.amountMode === 'single' ? 'active' : ''}
-          onClick={() => onChange({ ...mapping, amountMode: 'single' })}
+          onClick={() => onMappingChange({ ...mapping, amountMode: 'single' })}
         >
           עמודת סכום אחת
         </button>
         <button
           type="button"
           className={mapping.amountMode === 'debitCredit' ? 'active' : ''}
-          onClick={() => onChange({ ...mapping, amountMode: 'debitCredit' })}
+          onClick={() => onMappingChange({ ...mapping, amountMode: 'debitCredit' })}
         >
           חובה / זכות נפרדות
         </button>
       </div>
 
       {mapping.amountMode === 'single' ? (
-        <label className="settings-label">
-          עמודת סכום (שלילי = הוצאה)
-          <select
-            className="note-input"
-            value={mapping.amount ?? ''}
-            onChange={(e) => onChange({ ...mapping, amount: e.target.value === '' ? null : Number(e.target.value) })}
-          >
-            <option value="">בחרי עמודה</option>
-            {csv.headers.map((h, i) => (
-              <option key={i} value={i}>
-                {h || `עמודה ${i + 1}`}
-              </option>
-            ))}
-          </select>
-        </label>
+        <>
+          <label className="settings-label">
+            עמודת סכום
+            <select
+              className="note-input"
+              value={mapping.amount ?? ''}
+              onChange={(e) => onMappingChange({ ...mapping, amount: e.target.value === '' ? null : Number(e.target.value) })}
+            >
+              <option value="">בחרי עמודה</option>
+              {headers.map((h, i) => (
+                <option key={i} value={i}>
+                  {h || `עמודה ${i + 1}`}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="settings-label">
+            איך לפרש את העמודה הזו?
+            <select
+              className="note-input"
+              value={mapping.singleColumnMode}
+              onChange={(e) => onMappingChange({ ...mapping, singleColumnMode: e.target.value as ColumnMapping['singleColumnMode'] })}
+            >
+              <option value="allExpense">כל השורות הן הוצאה (למשל דוח כרטיס אשראי)</option>
+              <option value="signed">לפי סימן — שלילי = הוצאה, חיובי = הכנסה</option>
+              <option value="allIncome">כל השורות הן הכנסה</option>
+            </select>
+          </label>
+        </>
       ) : (
         <div className="recurring-form-row">
           <label className="settings-label">
@@ -191,10 +246,10 @@ function ColumnMappingStep({
             <select
               className="note-input"
               value={mapping.debit ?? ''}
-              onChange={(e) => onChange({ ...mapping, debit: e.target.value === '' ? null : Number(e.target.value) })}
+              onChange={(e) => onMappingChange({ ...mapping, debit: e.target.value === '' ? null : Number(e.target.value) })}
             >
               <option value="">בחרי עמודה</option>
-              {csv.headers.map((h, i) => (
+              {headers.map((h, i) => (
                 <option key={i} value={i}>
                   {h || `עמודה ${i + 1}`}
                 </option>
@@ -206,10 +261,10 @@ function ColumnMappingStep({
             <select
               className="note-input"
               value={mapping.credit ?? ''}
-              onChange={(e) => onChange({ ...mapping, credit: e.target.value === '' ? null : Number(e.target.value) })}
+              onChange={(e) => onMappingChange({ ...mapping, credit: e.target.value === '' ? null : Number(e.target.value) })}
             >
               <option value="">בחרי עמודה</option>
-              {csv.headers.map((h, i) => (
+              {headers.map((h, i) => (
                 <option key={i} value={i}>
                   {h || `עמודה ${i + 1}`}
                 </option>
@@ -219,14 +274,15 @@ function ColumnMappingStep({
         </div>
       )}
 
-      {preview.length > 0 && (
+      {dataPreview.length > 0 && (
         <div className="import-preview">
-          {preview.map((row, i) => (
+          <p className="import-preview-caption">כך זה ייראה אחרי הייבוא:</p>
+          {extractRows(dataPreview, mapping).imported.map((row, i) => (
             <p key={i} className="import-preview-row">
-              {row[mapping.date] ?? ''} · {mapping.amountMode === 'single'
-                ? row[mapping.amount ?? -1] ?? ''
-                : `${row[mapping.debit ?? -1] ?? '-'} / ${row[mapping.credit ?? -1] ?? '-'}`}{' '}
-              · {mapping.description !== null ? row[mapping.description] ?? '' : ''}
+              <span className={row.type === 'expense' ? 'trend-up' : 'trend-down'}>
+                {row.type === 'expense' ? '-' : '+'}₪{row.amount.toLocaleString()}
+              </span>{' '}
+              · {row.date} · {row.note}
             </p>
           ))}
         </div>

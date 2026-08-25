@@ -1,11 +1,6 @@
 import Papa from 'papaparse'
 import { readSheet } from 'read-excel-file/browser'
 
-export interface ParsedCsv {
-  headers: string[]
-  rows: string[][]
-}
-
 /**
  * Israeli bank/credit-card CSV exports are frequently Windows-1255
  * (Hebrew) rather than UTF-8. Real UTF-8 Hebrew text is virtually never
@@ -21,11 +16,10 @@ async function readFileText(file: File): Promise<string> {
   }
 }
 
-export async function parseCsvFile(file: File): Promise<ParsedCsv> {
+export async function parseCsvRows(file: File): Promise<string[][]> {
   const text = await readFileText(file)
   const result = Papa.parse<string[]>(text, { skipEmptyLines: true })
-  const [headerRow, ...rows] = result.data
-  return { headers: headerRow ?? [], rows }
+  return result.data
 }
 
 function cellToString(cell: string | number | boolean | Date | null): string {
@@ -34,24 +28,23 @@ function cellToString(cell: string | number | boolean | Date | null): string {
   return String(cell)
 }
 
-export async function parseXlsxFile(file: File): Promise<ParsedCsv> {
+export async function parseXlsxRows(file: File): Promise<string[][]> {
   const sheet = await readSheet(file)
-  const [headerRow, ...rows] = sheet as (string | number | boolean | Date | null)[][]
-  return {
-    headers: (headerRow ?? []).map(cellToString),
-    rows: rows.map((row) => row.map(cellToString)),
-  }
+  return (sheet as (string | number | boolean | Date | null)[][]).map((row) => row.map(cellToString))
 }
 
-export function parseSpreadsheetFile(file: File): Promise<ParsedCsv> {
-  return /\.(xlsx|xls)$/i.test(file.name) ? parseXlsxFile(file) : parseCsvFile(file)
+export function parseSpreadsheetRows(file: File): Promise<string[][]> {
+  return /\.(xlsx|xls)$/i.test(file.name) ? parseXlsxRows(file) : parseCsvRows(file)
 }
+
+export type SingleColumnMode = 'signed' | 'allExpense' | 'allIncome'
 
 export interface ColumnMapping {
   date: number
   description: number | null
   amountMode: 'single' | 'debitCredit'
   amount: number | null
+  singleColumnMode: SingleColumnMode
   debit: number | null
   credit: number | null
 }
@@ -61,29 +54,115 @@ const AMOUNT_KEYWORDS = ['סכום', 'amount', 'total']
 const DEBIT_KEYWORDS = ['חובה', 'חיוב', 'debit']
 const CREDIT_KEYWORDS = ['זכות', 'זיכוי', 'credit']
 const DESCRIPTION_KEYWORDS = ['תיאור', 'פירוט', 'עסק', 'description', 'details', 'memo']
+const ALL_KEYWORDS = [...DATE_KEYWORDS, ...AMOUNT_KEYWORDS, ...DEBIT_KEYWORDS, ...CREDIT_KEYWORDS, ...DESCRIPTION_KEYWORDS]
 
-function findColumn(headers: string[], keywords: string[]): number | null {
+/**
+ * Real exports often have a title/metadata row or two above the actual
+ * table (account name, statement period, etc.), so the first row isn't
+ * reliably the header row. Score the first few rows by how many cells
+ * look like column headers we recognize, and pick the best one.
+ */
+export function guessHeaderRowIndex(allRows: string[][]): number {
+  const searchLimit = Math.min(allRows.length, 15)
+  let bestIndex = 0
+  let bestScore = 0
+
+  for (let i = 0; i < searchLimit; i++) {
+    const row = allRows[i].map((cell) => cell.trim().toLowerCase())
+    const score = row.filter((cell) => cell !== '' && ALL_KEYWORDS.some((k) => cell.includes(k.toLowerCase()))).length
+    if (score > bestScore) {
+      bestScore = score
+      bestIndex = i
+    }
+  }
+
+  return bestIndex
+}
+
+function findColumn(headers: string[], keywords: string[], exclude: Set<number>): number | null {
   const lower = headers.map((h) => h.trim().toLowerCase())
   for (const keyword of keywords) {
-    const idx = lower.findIndex((h) => h.includes(keyword.toLowerCase()))
+    const idx = lower.findIndex((h, i) => !exclude.has(i) && h.includes(keyword.toLowerCase()))
     if (idx !== -1) return idx
   }
   return null
 }
 
-export function guessColumnMapping(headers: string[]): ColumnMapping {
-  const debit = findColumn(headers, DEBIT_KEYWORDS)
-  const credit = findColumn(headers, CREDIT_KEYWORDS)
+/**
+ * Assigns columns in order and excludes whatever's already claimed, so a
+ * short keyword like "עסק" (business) can't steal a column that's really
+ * the date ("תאריך עסקה" — transaction date — contains "עסק" as a substring).
+ *
+ * Amount is checked before debit/credit: a column literally named "סכום"
+ * (amount) is a strong, specific signal for a single-column format, and
+ * needs priority over the debit keyword "חיוב", which — confusingly —
+ * also appears inside the extremely common credit-card header "סכום חיוב"
+ * (amount charged). Without this order, that single amount column gets
+ * misread as a "debit" column in a two-column debit/credit layout.
+ */
+export function guessColumnMapping(headers: string[], dataRows: string[][] = []): ColumnMapping {
+  const used = new Set<number>()
+
+  const date = findColumn(headers, DATE_KEYWORDS, used) ?? 0
+  used.add(date)
+
+  const singleAmount = findColumn(headers, AMOUNT_KEYWORDS, used)
+
+  let debit: number | null = null
+  let credit: number | null = null
+  if (singleAmount === null) {
+    debit = findColumn(headers, DEBIT_KEYWORDS, used)
+    if (debit !== null) used.add(debit)
+    credit = findColumn(headers, CREDIT_KEYWORDS, used)
+    if (credit !== null) used.add(credit)
+  }
   const hasDebitCredit = debit !== null && credit !== null
 
+  const amount = hasDebitCredit ? null : singleAmount
+  if (amount !== null) used.add(amount)
+
+  const description = findColumn(headers, DESCRIPTION_KEYWORDS, used)
+
   return {
-    date: findColumn(headers, DATE_KEYWORDS) ?? 0,
-    description: findColumn(headers, DESCRIPTION_KEYWORDS),
+    date,
+    description,
     amountMode: hasDebitCredit ? 'debitCredit' : 'single',
-    amount: hasDebitCredit ? null : findColumn(headers, AMOUNT_KEYWORDS),
+    amount,
+    singleColumnMode: amount !== null ? guessSingleColumnMode(dataRows, amount) : 'signed',
     debit,
     credit,
   }
+}
+
+/**
+ * Credit-card statements list every charge as a plain positive number —
+ * there's no sign to read "expense" from, unlike a bank account's signed
+ * running balance. If none of the sampled values are negative, a single
+ * amount column is far more likely to be "every row is a charge" than
+ * "every row happens to be positive income", so default to all-expense.
+ */
+function guessSingleColumnMode(dataRows: string[][], amountColumnIndex: number): SingleColumnMode {
+  const sample = dataRows.slice(0, 30)
+  const hasNegative = sample.some((row) => {
+    const value = parseAmountFlexible(row[amountColumnIndex] ?? '')
+    return value !== null && value < 0
+  })
+  return hasNegative ? 'signed' : 'allExpense'
+}
+
+const HEBREW_MONTH_NAMES: Record<string, number> = {
+  'ינו': 1, 'ינואר': 1,
+  'פבר': 2, 'פברואר': 2,
+  'מרץ': 3,
+  'אפר': 4, 'אפריל': 4,
+  'מאי': 5,
+  'יונ': 6, 'יוני': 6,
+  'יול': 7, 'יולי': 7,
+  'אוג': 8, 'אוגוסט': 8,
+  'ספט': 9, 'ספטמבר': 9,
+  'אוק': 10, 'אוקטובר': 10,
+  'נוב': 11, 'נובמבר': 11,
+  'דצמ': 12, 'דצמבר': 12,
 }
 
 export function parseDateFlexible(raw: string): string | null {
@@ -104,6 +183,16 @@ export function parseDateFlexible(raw: string): string | null {
     const month = Number(m)
     if (month < 1 || month > 12 || day < 1 || day > 31) return null
     return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  }
+
+  // "01 באוג 2026" / "1 אוגוסט 26" style Hebrew month names.
+  const hebrewMonth = trimmed.match(/^(\d{1,2})\s+(?:ב)?([א-ת]+)['\s]+(\d{2,4})$/)
+  if (hebrewMonth) {
+    const [, d, monthName, yRaw] = hebrewMonth
+    const month = HEBREW_MONTH_NAMES[monthName]
+    if (!month) return null
+    const year = yRaw.length === 2 ? `20${yRaw}` : yRaw
+    return `${year}-${String(month).padStart(2, '0')}-${String(Number(d)).padStart(2, '0')}`
   }
 
   return null
@@ -137,12 +226,14 @@ export interface ImportedRow {
 
 export interface ImportResult {
   imported: ImportedRow[]
-  invalidCount: number
+  invalidDateCount: number
+  invalidAmountCount: number
 }
 
 export function extractRows(rows: string[][], mapping: ColumnMapping): ImportResult {
   const imported: ImportedRow[] = []
-  let invalidCount = 0
+  let invalidDateCount = 0
+  let invalidAmountCount = 0
 
   for (const row of rows) {
     const date = parseDateFlexible(row[mapping.date] ?? '')
@@ -155,7 +246,9 @@ export function extractRows(rows: string[][], mapping: ColumnMapping): ImportRes
       const value = mapping.amount !== null ? parseAmountFlexible(row[mapping.amount] ?? '') : null
       if (value !== null && value !== 0) {
         amount = Math.abs(value)
-        type = value < 0 ? 'expense' : 'income'
+        if (mapping.singleColumnMode === 'allExpense') type = 'expense'
+        else if (mapping.singleColumnMode === 'allIncome') type = 'income'
+        else type = value < 0 ? 'expense' : 'income'
       }
     } else {
       const debitValue = mapping.debit !== null ? parseAmountFlexible(row[mapping.debit] ?? '') : null
@@ -169,13 +262,17 @@ export function extractRows(rows: string[][], mapping: ColumnMapping): ImportRes
       }
     }
 
-    if (!date || amount === null) {
-      invalidCount++
+    if (!date) {
+      invalidDateCount++
+      continue
+    }
+    if (amount === null) {
+      invalidAmountCount++
       continue
     }
 
     imported.push({ date, amount, type, note })
   }
 
-  return { imported, invalidCount }
+  return { imported, invalidDateCount, invalidAmountCount }
 }

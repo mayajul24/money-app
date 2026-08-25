@@ -605,6 +605,13 @@
   gap: 4px;
 }
 
+.import-preview-caption {
+  margin: 0 0 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
 .import-preview-row {
   margin: 0;
   font-size: 12px;
