@@ -37,3 +37,34 @@ export async function updateTransaction(id: number, input: TransactionInput) {
 export async function deleteTransaction(id: number) {
   await db.transactions.delete(id)
 }
+
+/**
+ * Skips rows that already exist (same date/amount/type/note) so re-importing
+ * an overlapping statement doesn't create duplicates.
+ */
+export async function importTransactions(
+  candidates: { type: TransactionType; amount: number; category: CategoryId; note: string; date: string }[],
+): Promise<{ added: number; skipped: number }> {
+  const existing = await db.transactions.toArray()
+  const key = (t: { date: string; amount: number; type: TransactionType; note: string }) =>
+    `${t.date}|${t.amount}|${t.type}|${t.note}`
+  const existingKeys = new Set(existing.map(key))
+
+  let added = 0
+  let skipped = 0
+  const toInsert: Transaction[] = []
+
+  for (const candidate of candidates) {
+    const k = key(candidate)
+    if (existingKeys.has(k)) {
+      skipped++
+      continue
+    }
+    existingKeys.add(k)
+    toInsert.push({ ...candidate, createdAt: Date.now() } as Transaction)
+    added++
+  }
+
+  await db.transactions.bulkAdd(toInsert)
+  return { added, skipped }
+}

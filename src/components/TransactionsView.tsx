@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { MonthNav } from './MonthNav'
 import { TransactionForm } from './TransactionForm'
+import { ImportTransactionsModal } from './ImportTransactionsModal'
 import { useMonthTransactions, deleteTransaction } from '../hooks/useTransactions'
 import { getCategory } from '../lib/categories'
 import { currentMonthKey } from '../lib/month'
@@ -10,14 +11,20 @@ export function TransactionsView() {
   const [monthKey, setMonthKey] = useState(currentMonthKey())
   const transactions = useMonthTransactions(monthKey)
   const [formState, setFormState] = useState<{ open: boolean; editing?: Transaction }>({ open: false })
+  const [showImport, setShowImport] = useState(false)
 
   return (
     <div className="transactions-view">
       <MonthNav monthKey={monthKey} onChange={setMonthKey} />
 
-      <button className="add-transaction-btn" onClick={() => setFormState({ open: true })}>
-        + הוסף תנועה
-      </button>
+      <div className="transactions-header-row">
+        <button className="add-transaction-btn" onClick={() => setFormState({ open: true })}>
+          + הוסף תנועה
+        </button>
+        <button className="add-transaction-btn" onClick={() => setShowImport(true)}>
+          ייבוא מקובץ
+        </button>
+      </div>
 
       <div className="transaction-list">
         {transactions.length === 0 && <p className="empty-state">אין תנועות בחודש הזה</p>}
@@ -56,6 +63,7 @@ export function TransactionsView() {
       {formState.open && (
         <TransactionForm existing={formState.editing} onClose={() => setFormState({ open: false })} />
       )}
+      {showImport && <ImportTransactionsModal onClose={() => setShowImport(false)} />}
     </div>
   )
 }
