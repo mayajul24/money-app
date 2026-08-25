@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import {
-  parseCsvFile,
+  parseSpreadsheetFile,
   guessColumnMapping,
   extractRows,
   type ColumnMapping,
@@ -20,14 +20,14 @@ export function ImportTransactionsModal({ onClose }: { onClose: () => void }) {
   async function handleFile(file: File) {
     setError('')
     try {
-      const csv = await parseCsvFile(file)
+      const csv = await parseSpreadsheetFile(file)
       if (csv.headers.length === 0) {
-        setError('לא הצלחתי לקרוא את הקובץ. ודאי שזה קובץ CSV')
+        setError('לא הצלחתי לקרוא את הקובץ. ודאי שזה קובץ CSV או Excel')
         return
       }
       setStep({ kind: 'map', csv, mapping: guessColumnMapping(csv.headers) })
     } catch {
-      setError('לא הצלחתי לקרוא את הקובץ. ודאי שזה קובץ CSV')
+      setError('לא הצלחתי לקרוא את הקובץ. ודאי שזה קובץ CSV או Excel')
     }
   }
 
@@ -51,12 +51,10 @@ export function ImportTransactionsModal({ onClose }: { onClose: () => void }) {
         {step.kind === 'select' && (
           <div className="import-step">
             <h2 className="import-title">ייבוא מקובץ</h2>
-            <p className="settings-hint">
-              ייצאי קובץ CSV של תנועות מאתר הבנק או האשראי (אם קיבלת Excel, שמרי אותו כ-CSV קודם) ותעלי אותו כאן.
-            </p>
+            <p className="settings-hint">ייצאי קובץ תנועות (CSV או Excel) מאתר הבנק או האשראי ותעלי אותו כאן.</p>
             <input
               type="file"
-              accept=".csv,text/csv"
+              accept=".csv,.xlsx,.xls,text/csv"
               onChange={(e) => {
                 const file = e.target.files?.[0]
                 if (file) handleFile(file)

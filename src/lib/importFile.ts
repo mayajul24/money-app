@@ -1,4 +1,5 @@
 import Papa from 'papaparse'
+import { readSheet } from 'read-excel-file/browser'
 
 export interface ParsedCsv {
   headers: string[]
@@ -25,6 +26,25 @@ export async function parseCsvFile(file: File): Promise<ParsedCsv> {
   const result = Papa.parse<string[]>(text, { skipEmptyLines: true })
   const [headerRow, ...rows] = result.data
   return { headers: headerRow ?? [], rows }
+}
+
+function cellToString(cell: string | number | boolean | Date | null): string {
+  if (cell === null) return ''
+  if (cell instanceof Date) return cell.toISOString().slice(0, 10)
+  return String(cell)
+}
+
+export async function parseXlsxFile(file: File): Promise<ParsedCsv> {
+  const sheet = await readSheet(file)
+  const [headerRow, ...rows] = sheet as (string | number | boolean | Date | null)[][]
+  return {
+    headers: (headerRow ?? []).map(cellToString),
+    rows: rows.map((row) => row.map(cellToString)),
+  }
+}
+
+export function parseSpreadsheetFile(file: File): Promise<ParsedCsv> {
+  return /\.(xlsx|xls)$/i.test(file.name) ? parseXlsxFile(file) : parseCsvFile(file)
 }
 
 export interface ColumnMapping {
